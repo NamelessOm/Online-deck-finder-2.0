@@ -10,16 +10,17 @@ st.set_page_config(page_title="Limitless Card Tournament Finder", layout="wide")
 LIMITLESS_API = "https://play.limitlesstcg.com/api"
 TCGDEX_API = "https://api.tcgdex.net/v2/en"
 
-# Official English / Limitless / PTCGL set codes mapped from TCGdex set IDs
+# Official English / Limitless set codes mapped from TCGdex set IDs (for image fallback & display)
 TCGDEX_TO_ENGLISH_SET_CODE = {
-    # Mega Evolution / 2025-2026 Era
     "me01": "MEG",
     "me02": "PFL",
     "me02.5": "ASC",
     "me03": "POR",
-    "me04": "DLR",
+    "me04": "CRI",
+    "me05": "PBL",
+    "me06": "30C",
+    "me07": "DLR",
     "mep": "MEP",
-    # Scarlet & Violet Era
     "sv01": "SVI",
     "sv02": "PAL",
     "sv03": "OBF",
@@ -37,7 +38,6 @@ TCGDEX_TO_ENGLISH_SET_CODE = {
     "sv10.5b": "BLK",
     "sv10.5w": "WHT",
     "svp": "SVP",
-    # Sword & Shield Era
     "swsh1": "SSH",
     "swsh2": "RCL",
     "swsh3": "DAA",
@@ -55,122 +55,52 @@ TCGDEX_TO_ENGLISH_SET_CODE = {
     "swsh12": "SIT",
     "swsh12.5": "CRZ",
     "swshp": "SWSHP",
-    "cel25": "CEL",
-    # Sun & Moon Era
-    "sm1": "SUM",
-    "sm2": "GRI",
-    "sm3": "BUS",
-    "sm3.5": "SLG",
-    "sm4": "CIN",
-    "sm5": "UPR",
-    "sm6": "FLI",
-    "sm7": "CES",
-    "sm7.5": "DRM",
-    "sm8": "LOT",
-    "sm9": "TEU",
-    "sm10": "UNB",
-    "sm11": "UNM",
-    "sm115": "HIF",
-    "sm12": "CEC",
-    "smp": "SMP",
 }
 
-ENGLISH_PROMO_SET_CODES = {"MEP", "SVP", "SWSHP", "SMP", "XYSP", "BWP", "DPP", "HGP", "WSP"}
 
-
-def _is_non_english_set(set_id: str, set_name: str = "") -> bool:
-    """Rejects Japanese/Pocket/non-English sets that occasionally appear in TCGdex."""
+def _is_non_english_set(set_id: str) -> bool:
     sid = (set_id or "").strip().lower()
-    sname = (set_name or "").strip().lower()
-
-    # Reject TCG Pocket sets (A1, A1a, A2, P-A, etc.)
     if re.fullmatch(r"(a\d+[a-z]*|p-a|b\d+[a-z]*)", sid):
         return True
-    # Reject Japanese subset IDs like sv2a, sm12a, s8b, m1l, m1s
     if re.fullmatch(r"(sv|sm|xy|bw|s|m)\d+[a-z]+", sid) and sid not in TCGDEX_TO_ENGLISH_SET_CODE:
-        return True
-    if "(jp)" in sname or "japanese" in sname or "pocket" in sname:
         return True
     return False
 
 
-def _card_number_sort_key(number_str: str) -> tuple[int, str]:
-    cleaned = str(number_str).strip()
-    digits = "".join(ch for ch in cleaned if ch.isdigit())
-    num_val = int(digits) if digits else 0
-    return (num_val, cleaned.upper())
-
-
 @st.cache_data(ttl=86400)
 def load_set_metadata() -> dict[str, dict[str, str]]:
-    """
-    Maps TCGdex English set IDs to their official Limitless/English 3-letter set code
-    and releaseDate (YYYY-MM-DD).
-    """
     meta: dict[str, dict[str, str]] = {}
     try:
         resp = requests.get(f"{TCGDEX_API}/sets", timeout=15)
         if resp.status_code == 200:
             for s in resp.json():
                 set_id = str(s.get("id", "")).lower().strip()
-                set_name = str(s.get("name", ""))
-                if not set_id or _is_non_english_set(set_id, set_name):
+                if not set_id or _is_non_english_set(set_id):
                     continue
-
-                raw_tcg_code = str(s.get("tcgOnline") or "").strip().upper()
-                if set_id in TCGDEX_TO_ENGLISH_SET_CODE:
-                    eng_code = TCGDEX_TO_ENGLISH_SET_CODE[set_id]
-                elif raw_tcg_code and not _is_non_english_set(raw_tcg_code):
-                    eng_code = raw_tcg_code
-                else:
-                    eng_code = set_id.upper()
-
-                release_date = str(s.get("releaseDate") or "0000-00-00")
+                raw_tcg = str(s.get("tcgOnline") or "").strip().upper()
+                eng_code = TCGDEX_TO_ENGLISH_SET_CODE.get(set_id) or raw_tcg or set_id.upper()
                 meta[set_id] = {
                     "code": eng_code,
-                    "name": set_name,
-                    "release_date": release_date,
+                    "release_date": str(s.get("releaseDate") or "0000-00-00"),
                 }
     except requests.RequestException:
         pass
     return meta
 
 
-def get_gameplay_fingerprint(card: dict) -> tuple:
-    name = str(card.get("name", "")).strip().lower()
-    category = str(card.get("category", "")).strip().lower()
-    hp = str(card.get("hp", ""))
-
-    abilities = tuple(
-        (str(a.get("name", "")).strip().lower(), str(a.get("effect", "")).strip().lower())
-        for a in card.get("abilities", [])
-    )
-    attacks = tuple(
-        (
-            str(a.get("name", "")).strip().lower(),
-            tuple(a.get("cost", [])),
-            str(a.get("damage", "")).strip().lower(),
-            str(a.get("effect", "")).strip().lower(),
-        )
-        for a in card.get("attacks", [])
-    )
-    effect = str(card.get("effect", "")).strip().lower()
-
-    return (name, category, hp, abilities, attacks, effect)
-
-
 @st.cache_data(ttl=3600)
-def search_card_suggestions(searchterm: str) -> list[tuple[str, dict]]:
+def search_card_name_suggestions(searchterm: str) -> list[tuple[str, str]]:
     """
-    Queries TCGdex English cards as the user types, maps to official English set codes,
-    and returns (label, card_dict) tuples sorted newest-first.
+    Queries TCGdex as the user types and returns deduplicated (Card Name, Card Name) tuples,
+    ordered so names with the most recent printings appear first.
     """
     query = (searchterm or "").strip()
     if len(query) < 2:
         return []
 
     set_meta = load_set_metadata()
-    candidates = []
+    latest_date_by_name: dict[str, str] = {}
+    display_name_by_lower: dict[str, str] = {}
 
     try:
         resp = requests.get(f"{TCGDEX_API}/cards", params={"name": query}, timeout=10)
@@ -182,68 +112,82 @@ def search_card_suggestions(searchterm: str) -> list[tuple[str, dict]]:
             return []
 
         for item in items:
-            card_id = str(item.get("id", ""))
-            name = str(item.get("name", "Unknown"))
-            local_id = str(item.get("localId", "")).strip()
-            raw_set_id = card_id.split("-")[0].lower() if "-" in card_id else ""
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
 
+            card_id = str(item.get("id", ""))
+            raw_set_id = card_id.split("-")[0].lower() if "-" in card_id else ""
             if _is_non_english_set(raw_set_id):
                 continue
 
-            info = set_meta.get(raw_set_id)
-            if not info:
-                continue
+            release_date = (set_meta.get(raw_set_id) or {}).get("release_date", "0000-00-00")
+            key = name.lower()
 
-            set_code = info["code"]
-            release_date = info["release_date"]
+            if key not in display_name_by_lower:
+                display_name_by_lower[key] = name
+                latest_date_by_name[key] = release_date
+            elif release_date > latest_date_by_name[key]:
+                latest_date_by_name[key] = release_date
 
-            label = f"{name} ({set_code} #{local_id})"
-            payload = {
-                "id": card_id,
-                "name": name,
-                "set_code": set_code,
-                "raw_set_id": raw_set_id,
-                "number": local_id,
-                "image": item.get("image", ""),
-                "release_date": release_date,
-            }
-            candidates.append((release_date, _card_number_sort_key(local_id), label, payload))
+        # Sort by newest release date first, then shorter/exact-prefix name matches
+        q_lower = query.lower()
+        sorted_keys = sorted(
+            display_name_by_lower.keys(),
+            key=lambda k: (
+                latest_date_by_name[k],
+                1 if k == q_lower else 0,
+                1 if k.startswith(q_lower) else 0,
+            ),
+            reverse=True,
+        )
 
-        candidates.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
-        return [(entry[2], entry[3]) for entry in candidates[:30]]
+        return [(display_name_by_lower[k], display_name_by_lower[k]) for k in sorted_keys[:30]]
     except requests.RequestException:
         return []
 
 
 @st.cache_data(ttl=3600)
-def fetch_full_card_details(selected_card: dict) -> dict:
-    card_id = selected_card.get("id", "")
-    raw_set_id = selected_card.get("raw_set_id", "").lower()
-    set_code = TCGDEX_TO_ENGLISH_SET_CODE.get(raw_set_id, selected_card.get("set_code", "")).upper()
-    number = str(selected_card.get("number", "")).lstrip("0")
-    padded_num = number.zfill(3)
-    fallback_img = f"https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/tpci/{set_code}/{set_code}_{padded_num}_R_EN_LG.png"
+def fetch_representative_card(card_name: str) -> dict | None:
+    """Fetches the most recent English printing of a card name for artwork and attack text."""
+    set_meta = load_set_metadata()
+    best_item = None
+    best_date = ""
 
     try:
-        if card_id:
-            resp = requests.get(f"{TCGDEX_API}/cards/{card_id}", timeout=10)
-            if resp.status_code == 200:
-                card = resp.json()
-                raw_tcg_online = str(card.get("set", {}).get("tcgOnline") or "").strip().upper()
-                resolved_set = TCGDEX_TO_ENGLISH_SET_CODE.get(raw_set_id) or raw_tcg_online or set_code
-                card["resolved_set_code"] = resolved_set
-                card["resolved_number"] = str(card.get("localId", number)).strip()
+        resp = requests.get(f"{TCGDEX_API}/cards", params={"name": card_name}, timeout=10)
+        if resp.status_code == 200:
+            for item in resp.json():
+                if str(item.get("name", "")).strip().lower() != card_name.strip().lower():
+                    continue
+                cid = str(item.get("id", ""))
+                raw_set_id = cid.split("-")[0].lower() if "-" in cid else ""
+                if _is_non_english_set(raw_set_id):
+                    continue
+                r_date = (set_meta.get(raw_set_id) or {}).get("release_date", "0000-00-00")
+                if best_item is None or r_date >= best_date:
+                    best_item = item
+                    best_date = r_date
+
+        if best_item:
+            cid = str(best_item.get("id", ""))
+            raw_set_id = cid.split("-")[0].lower() if "-" in cid else ""
+            local_num = str(best_item.get("localId", "")).strip()
+            eng_set = (set_meta.get(raw_set_id) or {}).get("code") or raw_set_id.upper()
+            padded_num = local_num.lstrip("0").zfill(3)
+            fallback_img = f"https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/tpci/{eng_set}/{eng_set}_{padded_num}_R_EN_LG.png"
+
+            detail_resp = requests.get(f"{TCGDEX_API}/cards/{cid}", timeout=10)
+            if detail_resp.status_code == 200:
+                card = detail_resp.json()
+                card["resolved_set_code"] = eng_set
+                card["resolved_number"] = local_num
                 card["resolved_image"] = f"{card['image']}/high.webp" if card.get("image") else fallback_img
                 return card
     except requests.RequestException:
         pass
 
-    return {
-        "name": selected_card.get("name", "Unknown"),
-        "resolved_set_code": set_code,
-        "resolved_number": number,
-        "resolved_image": fallback_img,
-    }
+    return None
 
 
 @st.cache_data(ttl=86400)
@@ -269,74 +213,6 @@ def resolve_deck_card_image(name: str, set_code: str, number: str) -> str:
         pass
 
     return fallback_img
-
-
-@st.cache_data(ttl=3600)
-def find_equivalent_printings(base_card: dict, include_alt_arts: bool) -> list[dict]:
-    base_name = base_card.get("name", "").strip()
-    base_set = base_card.get("resolved_set_code", "").upper()
-    base_num = str(base_card.get("resolved_number", "")).strip()
-
-    primary_printing = {
-        "name": base_name,
-        "set_code": base_set,
-        "number": base_num,
-        "rarity": base_card.get("rarity", ""),
-    }
-
-    if not include_alt_arts:
-        return [primary_printing]
-
-    target_fp = get_gameplay_fingerprint(base_card)
-    set_meta = load_set_metadata()
-    equivalents = []
-    seen = set()
-
-    try:
-        resp = requests.get(f"{TCGDEX_API}/cards", params={"name": base_name}, timeout=10)
-        if resp.status_code == 200:
-            for item in resp.json():
-                if str(item.get("name", "")).strip().lower() != base_name.lower():
-                    continue
-
-                cid = item.get("id", "")
-                raw_set_id = cid.split("-")[0].lower() if "-" in cid else ""
-                if _is_non_english_set(raw_set_id):
-                    continue
-
-                set_info = set_meta.get(raw_set_id)
-                if not set_info:
-                    continue
-
-                detail_resp = requests.get(f"{TCGDEX_API}/cards/{cid}", timeout=10)
-                if detail_resp.status_code != 200:
-                    continue
-
-                cand = detail_resp.json()
-                if get_gameplay_fingerprint(cand) != target_fp:
-                    continue
-
-                raw_tcg_online = str(cand.get("set", {}).get("tcgOnline") or "").strip().upper()
-                cand_set = TCGDEX_TO_ENGLISH_SET_CODE.get(raw_set_id) or raw_tcg_online or set_info["code"]
-                cand_num = str(cand.get("localId", "")).strip()
-
-                key = (cand_set, cand_num.lstrip("0"))
-                if key not in seen:
-                    seen.add(key)
-                    equivalents.append({
-                        "name": base_name,
-                        "set_code": cand_set,
-                        "number": cand_num,
-                        "rarity": cand.get("rarity", ""),
-                    })
-    except requests.RequestException:
-        pass
-
-    base_key = (base_set, base_num.lstrip("0"))
-    if base_key not in seen:
-        equivalents.insert(0, primary_printing)
-
-    return equivalents
 
 
 @st.cache_data(ttl=600)
@@ -391,12 +267,12 @@ def normalize_decklist_groups(decklist: dict | list) -> dict[str, list[dict]]:
     return grouped
 
 
-def count_matching_printings(decklist: dict | list, printings: list[dict]) -> tuple[int, str]:
-    target_lookup = {
-        (p["name"].strip().lower(), p["set_code"].strip().upper(), str(p["number"]).strip().lstrip("0"))
-        for p in printings
-    }
-
+def count_card_by_name(decklist: dict | list, target_name: str) -> tuple[int, str]:
+    """
+    Matches any printing (regular, Full Art, SIR/IR, reprint, promo) with the exact card name
+    inside a Limitless decklist. Returns (total_copies, breakdown_string).
+    """
+    target_lower = target_name.strip().lower()
     grouped = normalize_decklist_groups(decklist)
     cards = grouped["Pokémon"] + grouped["Trainer"] + grouped["Energy"]
 
@@ -405,21 +281,24 @@ def count_matching_printings(decklist: dict | list, printings: list[dict]) -> tu
 
     for card in cards:
         c_name = str(card.get("name", "")).strip().lower()
-        c_set = str(card.get("set", "")).strip().upper()
-        c_num_raw = str(card.get("number", "")).strip()
-        c_num_clean = c_num_raw.lstrip("0")
-
-        if (c_name, c_set, c_num_clean) in target_lookup:
+        if c_name == target_lower:
             qty = int(card.get("count", 1))
+            c_set = str(card.get("set", "")).strip().upper()
+            c_num = str(card.get("number", "")).strip()
             total_count += qty
-            breakdown_parts.append(f"{qty}x {c_set} #{c_num_raw}")
+            breakdown_parts.append(f"{qty}x {c_set} #{c_num}")
 
     return total_count, ", ".join(breakdown_parts)
 
 
-def render_card_panel(card_data: dict, number: str, printings: list[dict]):
+def render_card_panel(card_data: dict | None, fallback_name: str):
+    if not card_data:
+        st.subheader(fallback_name)
+        return
+
     col_img, col_info = st.columns([1, 2], gap="large")
     set_code = card_data.get("resolved_set_code", "")
+    number = card_data.get("resolved_number", "")
 
     with col_img:
         if card_data.get("resolved_image"):
@@ -429,7 +308,7 @@ def render_card_panel(card_data: dict, number: str, printings: list[dict]):
         hp_text = f" - {card_data['hp']} HP" if card_data.get("hp") else ""
         types = ", ".join(card_data.get("types", []))
         type_text = f" - {types}" if types else ""
-        st.subheader(f"{card_data.get('name', 'Unknown')}{type_text}{hp_text}")
+        st.subheader(f"{card_data.get('name', fallback_name)}{type_text}{hp_text}")
 
         category = card_data.get("category", "")
         stage = card_data.get("stage", "")
@@ -459,12 +338,8 @@ def render_card_panel(card_data: dict, number: str, printings: list[dict]):
 
         set_info = card_data.get("set", {})
         set_name = set_info.get("name", set_code)
-        rarity = card_data.get("rarity", "")
-        st.info(f"**{set_name} ({set_code})** — #{number} {('• ' + rarity) if rarity else ''}")
-
-        if len(printings) > 1:
-            linked_labels = ", ".join(f"{p['set_code']} #{p['number']}" for p in printings)
-            st.success(f"**Linked Alt-Arts / Reprints Included ({len(printings)}):** {linked_labels}")
+        if set_name or set_code:
+            st.info(f"Showing preview from **{set_name} ({set_code})** #{number} • Tournament search includes all printings & alt-arts of **{fallback_name}**")
 
 
 def render_visual_decklist(deck_record: dict):
@@ -513,18 +388,18 @@ col_search1, col_search2 = st.columns(2, gap="large")
 
 with col_search1:
     st.markdown("#### 1. Primary Card (Required)")
-    selected_card_1 = st_searchbox(
-        search_card_suggestions,
-        placeholder="Type at least 2 letters (e.g. Golisopod, Talonflame)...",
+    selected_name_1 = st_searchbox(
+        search_card_name_suggestions,
+        placeholder="Type card name (e.g. Mega Golisopod ex, Talonflame ex)...",
         key=f"card1_searchbox_{epoch}",
         clear_on_submit=False,
     )
 
 with col_search2:
     st.markdown("#### 2. Second Card Combo Filter (Optional)")
-    selected_card_2 = st_searchbox(
-        search_card_suggestions,
-        placeholder="Optional 2nd card...",
+    selected_name_2 = st_searchbox(
+        search_card_name_suggestions,
+        placeholder="Optional 2nd card name...",
         key=f"card2_searchbox_{epoch}",
         clear_on_submit=False,
     )
@@ -536,38 +411,24 @@ min_players = f2.number_input("Min Players", min_value=0, max_value=2000, value=
 fmt_filter = f3.selectbox("Format", ["STANDARD", "EXPANDED", "ALL"])
 api_key = f4.text_input("Limitless API Key (Optional)", type="password")
 
-include_alt_arts = st.checkbox(
-    "Include Alternative Arts, Full Arts, Illustration Rares, Reprints & Promos",
-    value=True,
-)
-
 run_search = st.button("Search Tournaments", type="primary", use_container_width=True)
 
 if run_search:
-    if not selected_card_1:
-        st.error("Please select a primary card from the dropdown menu first.")
+    if not selected_name_1:
+        st.error("Please select a primary card name from the dropdown menu first.")
         st.stop()
 
     st.session_state.active_visual_deck_idx = None
-    card1_full = fetch_full_card_details(selected_card_1)
-    c1_name = card1_full.get("name", selected_card_1["name"])
-    c1_num = selected_card_1["number"]
-    c1_printings = find_equivalent_printings(card1_full, include_alt_arts)
+    c1_name = selected_name_1.strip()
+    card1_full = fetch_representative_card(c1_name)
 
-    card2_full = None
-    c2_printings = []
-    if selected_card_2:
-        card2_full = fetch_full_card_details(selected_card_2)
-        c2_name = card2_full.get("name", selected_card_2["name"])
-        c2_num = selected_card_2["number"]
-        c2_printings = find_equivalent_printings(card2_full, include_alt_arts)
+    c2_name = selected_name_2.strip() if selected_name_2 else ""
+    card2_full = fetch_representative_card(c2_name) if c2_name else None
 
+    st.session_state.c1_name = c1_name
     st.session_state.card1_full = card1_full
-    st.session_state.c1_num = c1_num
-    st.session_state.c1_printings = c1_printings
+    st.session_state.c2_name = c2_name
     st.session_state.card2_full = card2_full
-    st.session_state.c2_num = selected_card_2["number"] if selected_card_2 else ""
-    st.session_state.c2_printings = c2_printings
 
     headers = {"X-Access-Key": api_key} if api_key else {}
     delay = 0.15 if api_key else 0.5
@@ -596,14 +457,14 @@ if run_search:
             if not decklist:
                 continue
 
-            c1_count, c1_breakdown = count_matching_printings(decklist, c1_printings)
+            c1_count, c1_breakdown = count_card_by_name(decklist, c1_name)
             if c1_count == 0:
                 continue
 
             c2_count = None
             c2_breakdown = ""
-            if card2_full:
-                c2_val, c2_bd = count_matching_printings(decklist, c2_printings)
+            if c2_name:
+                c2_val, c2_bd = count_card_by_name(decklist, c2_name)
                 if c2_val == 0:
                     continue
                 c2_count = c2_val
@@ -618,11 +479,69 @@ if run_search:
                 f"{c1_name} Total": c1_count,
                 f"{c1_name} Printings": c1_breakdown,
             }
-            if card2_full:
-                c2_label = card2_full.get("name", selected_card_2["name"])
-                row[f"{c2_label} Total"] = c2_count
-                row[f"{c2_label} Printings"] = c2_breakdown
+            if c2_name:
+                row[f"{c2_name} Total"] = c2_count
+                row[f"{c2_name} Printings"] = c2_breakdown
 
             row["Decklist"] = f"https://play.limitlesstcg.com/tournament/{t_id}/player/{entry.get('player')}/decklist"
             row["raw_decklist"] = decklist
             matches.append(row)
+
+        time.sleep(delay)
+
+    progress.empty()
+    st.session_state.search_results = matches
+
+if "c1_name" in st.session_state:
+    st.markdown("---")
+    if st.session_state.c2_name:
+        left_card, right_card = st.columns(2, gap="large")
+        with left_card:
+            render_card_panel(st.session_state.card1_full, st.session_state.c1_name)
+        with right_card:
+            render_card_panel(st.session_state.card2_full, st.session_state.c2_name)
+    else:
+        render_card_panel(st.session_state.card1_full, st.session_state.c1_name)
+
+if run_search or st.session_state.search_results:
+    st.markdown("---")
+    st.subheader("Decklists That Include This Card")
+
+    matches = st.session_state.search_results
+    if not matches:
+        st.warning("No decklists found matching those filters.")
+    else:
+        public_rows = [{k: v for k, v in m.items() if k != "raw_decklist"} for m in matches]
+        df = pd.DataFrame(public_rows)
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Decklist": st.column_config.LinkColumn("Decklist Link", display_text="View Decklist")
+            },
+        )
+
+        st.download_button(
+            "Download Results as CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name="limitless_card_results.csv",
+            mime="text/csv",
+        )
+
+        st.markdown("---")
+        st.subheader("Visual Decklist")
+        deck_options = [
+            f"#{m['Place']} — {m['Player']} ({m['Tournament']} • {m['Date']})"
+            for m in matches
+        ]
+        pick_col, btn_col = st.columns([3, 1], vertical_alignment="bottom")
+        chosen_label = pick_col.selectbox("Select a matching decklist to preview", deck_options, key="visual_deck_select")
+        if btn_col.button("Show Visual Decklist", type="secondary", use_container_width=True):
+            st.session_state.active_visual_deck_idx = deck_options.index(chosen_label)
+
+        if st.session_state.active_visual_deck_idx is not None:
+            idx = st.session_state.active_visual_deck_idx
+            if 0 <= idx < len(matches):
+                render_visual_decklist(matches[idx])
